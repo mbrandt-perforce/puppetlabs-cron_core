@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when Puppet creates a user in the middle of its run' do
@@ -32,28 +34,43 @@ RSpec.context 'when Puppet creates a user in the middle of its run' do
 
   compatible_agents.each do |agent|
     it "is able to write their crontab on #{agent}" do
-      puppet_result = nil
-      step "Create the new user, and the known + new user's crontab entries with Puppet" do
-        # Placing Cron[first_entry] before creating the new user
-        # triggers a prefetch of all the Cron resources on the
-        # system. This lets us test that the prefetch step marks
-        # the crontab of an unknown user as empty instead of marking
-        # it as a failure.
-        manifest = [
-          cron_manifest('first_entry', command: 'ls', user: known_username),
-          user_manifest(new_username, ensure: :present),
-          cron_manifest('second_entry', command: 'ls', user: new_username),
-        ].join("\n\n")
-        puppet_result = apply_manifest_on(agent, manifest)
-      end
+      expect { verify_new_user_crontab(agent) }.not_to raise_error
+    end
+  end
 
-      step 'Verify that Puppet successfully evaluates a Cron resource associated with the new user' do
-        assert_match(%r{Cron.*second_entry}, puppet_result.stdout, 'Puppet fails to evaluate a Cron resource associated with a new user')
-      end
+  def verify_new_user_crontab(agent)
+    puppet_result = apply_crontabs_for_new_user(agent)
+    verify_new_user_resource_succeeded(puppet_result)
+    verify_new_user_crontab_contents(agent)
+  end
 
-      step "Verify that Puppet did create the new user's crontab file" do
-        assert_matching_arrays(['* * * * * ls'], crontab_entries_of(agent, new_username), "Puppet did not create the new user's crontab file")
-      end
+  def apply_crontabs_for_new_user(agent)
+    result = nil
+    step "Create the new user, and the known + new user's crontab entries with Puppet" do
+      # Placing Cron[first_entry] before creating the new user
+      # triggers a prefetch of all the Cron resources on the
+      # system. This lets us test that the prefetch step marks
+      # the crontab of an unknown user as empty instead of marking
+      # it as a failure.
+      manifest = [
+        cron_manifest('first_entry', command: 'ls', user: known_username),
+        user_manifest(new_username, ensure: :present),
+        cron_manifest('second_entry', command: 'ls', user: new_username),
+      ].join("\n\n")
+      result = apply_manifest_on(agent, manifest)
+    end
+    result
+  end
+
+  def verify_new_user_resource_succeeded(puppet_result)
+    step 'Verify that Puppet successfully evaluates a Cron resource associated with the new user' do
+      expect(puppet_result.stdout).to(match(%r{Cron.*second_entry}), 'Puppet fails to evaluate a Cron resource associated with a new user')
+    end
+  end
+
+  def verify_new_user_crontab_contents(agent)
+    step "Verify that Puppet did create the new user's crontab file" do
+      assert_matching_arrays(['* * * * * ls'], crontab_entries_of(agent, new_username), "Puppet did not create the new user's crontab file")
     end
   end
 end

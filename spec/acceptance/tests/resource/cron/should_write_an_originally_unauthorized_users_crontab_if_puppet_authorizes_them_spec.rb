@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when Puppet authorizes a previously unauthorized user to use crontab' do
@@ -62,41 +64,45 @@ RSpec.context 'when Puppet authorizes a previously unauthorized user to use cron
     is_aix_or_solaris_agent = agent['platform'].include?('aix') || agent['platform'].include?('solaris')
 
     it "writes that user's crontab on #{agent}", if: is_aix_or_solaris_agent do
-      step 'Add the unauthorized user to the cron.deny file' do
-        on(agent, "echo #{unauthorized_username} >> #{cron_deny_path[agent]}")
-      end
+      expect { verify_authorized_crontab_write(agent) }.not_to raise_error
+    end
+  end
 
-      step 'Verify that the unauthorized user was added to the cron.deny file' do
-        cron_deny_contents = on(agent, "cat #{cron_deny_path[agent]}").stdout
-        assert_match(%r{^#{unauthorized_username}$}, cron_deny_contents, 'Failed to add the unauthorized user to the cron.deny file')
-      end
+  def verify_authorized_crontab_write(agent)
+    add_unauthorized_user_to_deny(agent)
+    verify_user_in_deny_file(agent)
+    apply_authorized_crontab_resources(agent)
+    verify_authorized_user_crontab(agent)
+  end
 
-      step "Modify the unauthorized user's crontab with Puppet" do
-        # The scenario we're testing here is:
-        #   * An unrelated cron resource triggers the prefetch step, which will also
-        #   prefetch the crontab of our unauthorized user. The latter prefetch should
-        #   fail, instead returning an empty crontab file.
-        #
-        #   * Puppet authorizes our unauthorized user by removing them from the cron.deny
-        #   file.
-        #
-        #   * A cron resource linked to our (originally) unauthorized user should now be able
-        #   to write to that user's crontab file (assuming it requires the resource updating
-        #   the cron.deny file)
-        #
-        # The following manifest replicates the above scenario. Note that we test this specific
-        # scenario to ensure that the changes in PUP-9217 enforce backwards compatibility.
-        manifest = [
-          cron_manifest('first_entry', command: 'ls', user: username),
-          file_manifest(cron_deny_path[agent], ensure: :present, content: cron_deny_original_contents[agent]),
-          cron_manifest('second_entry', command: 'ls', user: unauthorized_username),
-        ].join("\n\n")
-        apply_manifest_on(agent, manifest)
-      end
+  def add_unauthorized_user_to_deny(agent)
+    step 'Add the unauthorized user to the cron.deny file' do
+      on(agent, "echo #{unauthorized_username} >> #{cron_deny_path[agent]}")
+    end
+  end
 
-      step "Verify that Puppet did modify the unauthorized user's crontab" do
-        assert_matching_arrays(['* * * * * ls'], crontab_entries_of(agent, unauthorized_username), "Puppet did not modify the unauthorized user's crontab file")
-      end
+  def verify_user_in_deny_file(agent)
+    step 'Verify that the unauthorized user was added to the cron.deny file' do
+      cron_deny_contents = on(agent, "cat #{cron_deny_path[agent]}").stdout
+      expect(cron_deny_contents).to(match(%r{^#{unauthorized_username}$}), 'Failed to add the unauthorized user to the cron.deny file')
+    end
+  end
+
+  def apply_authorized_crontab_resources(agent)
+    step "Modify the unauthorized user's crontab with Puppet" do
+      # Prefetch a denied crontab, remove the deny entry, then write the user's cron entry.
+      manifest = [
+        cron_manifest('first_entry', command: 'ls', user: username),
+        file_manifest(cron_deny_path[agent], ensure: :present, content: cron_deny_original_contents[agent]),
+        cron_manifest('second_entry', command: 'ls', user: unauthorized_username),
+      ].join("\n\n")
+      apply_manifest_on(agent, manifest)
+    end
+  end
+
+  def verify_authorized_user_crontab(agent)
+    step "Verify that Puppet did modify the unauthorized user's crontab" do
+      assert_matching_arrays(['* * * * * ls'], crontab_entries_of(agent, unauthorized_username), "Puppet did not modify the unauthorized user's crontab file")
     end
   end
 end

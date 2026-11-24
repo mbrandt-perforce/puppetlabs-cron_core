@@ -1,64 +1,10 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
 describe Puppet::Type.type(:cron).provider(:crontab) do
   let :provider do
     described_class.new(command: '/bin/true')
-  end
-
-  let :resource do
-    Puppet::Type.type(:cron).new(
-      minute: ['0', '15', '30', '45'],
-      hour: ['8-18', '20-22'],
-      monthday: ['31'],
-      month: ['12'],
-      weekday: ['7'],
-      name: 'basic',
-      command: '/bin/true',
-      target: 'root',
-      provider:,
-    )
-  end
-
-  let :resource_special do
-    Puppet::Type.type(:cron).new(
-      special: 'reboot',
-      name: 'special',
-      command: '/bin/true',
-      target: 'nobody',
-    )
-  end
-
-  let :resource_sparse do
-    Puppet::Type.type(:cron).new(
-      minute: ['42'],
-      target: 'root',
-      name: 'sparse',
-    )
-  end
-
-  let :record_special do
-    {
-      record_type: :crontab,
-      special: 'reboot',
-      command: '/bin/true',
-      on_disk: true,
-      target: 'nobody',
-    }
-  end
-
-  let :record do
-    {
-      record_type: :crontab,
-      minute: ['0', '15', '30', '45'],
-      hour: ['8-18', '20-22'],
-      monthday: ['31'],
-      month: ['12'],
-      weekday: ['7'],
-      special: :absent,
-      command: '/bin/true',
-      on_disk: true,
-      target: 'root',
-    }
   end
 
   describe 'when determining the correct filetype' do
@@ -81,22 +27,20 @@ describe Puppet::Type.type(:cron).provider(:crontab) do
   # I'd use expect(ENV).to receive(:[]).with('USER') but this does not work because
   # ENV["USER"] is evaluated at load time.
   describe 'when determining the default target' do
-    it "uses the current user #{ENV['USER']}", if: ENV['USER'] do
-      expect(described_class.default_target).to eq(ENV['USER'])
+    it "uses the current user #{ENV.fetch('USER', nil)}", if: ENV.fetch('USER', nil) do
+      expect(described_class.default_target).to eq(ENV.fetch('USER', nil))
     end
 
-    it 'fallbacks to root', unless: ENV['USER'] do
+    it 'fallbacks to root', unless: ENV.fetch('USER', nil) do
       expect(described_class.default_target).to eq('root')
     end
   end
 
-  describe '.targets' do
+  describe '.targets', :aggregate_failures do
     let(:tabs) { [described_class.default_target] + ['foo', 'bar'] }
 
     before(:each) do
-      allow(File).to receive(:readable?).and_return true
-      allow(File).to receive(:file?).and_return true
-      allow(File).to receive(:writable?).and_return true
+      allow(File).to receive_messages(readable?: true, file?: true, writable?: true)
     end
 
     it 'adds all crontabs as targets' do
@@ -105,7 +49,7 @@ describe Puppet::Type.type(:cron).provider(:crontab) do
     end
   end
 
-  describe 'when parsing a record' do
+  describe 'when parsing a record', :aggregate_failures do
     it 'parses a comment' do
       expect(described_class.parse_line('# This is a test')).to eq(record_type: :comment,
                                                                    line: '# This is a test')
@@ -133,68 +77,112 @@ describe Puppet::Type.type(:cron).provider(:crontab) do
       expect(described_class.parse_line('SPACE = BAR')).to eq(record_type: :environment, line: 'SPACE = BAR')
     end
 
-    it 'extracts a cron entry' do
-      expect(described_class.parse_line('* * * * * /bin/true')).to eq(record_type: :crontab,
-                                                                      hour: :absent,
-                                                                      minute: :absent,
-                                                                      month: :absent,
-                                                                      weekday: :absent,
-                                                                      monthday: :absent,
-                                                                      special: :absent,
-                                                                      command: '/bin/true')
-      expect(described_class.parse_line('0,15,30,45 8-18,20-22 31 12 7 /bin/true')).to eq(record_type: :crontab,
-                                                                                          minute: ['0', '15', '30', '45'],
-                                                                                          hour: ['8-18', '20-22'],
-                                                                                          monthday: ['31'],
-                                                                                          month: ['12'],
-                                                                                          weekday: ['7'],
-                                                                                          special: :absent,
-                                                                                          command: '/bin/true')
-      # A percent sign will cause the rest of the string to be passed as
-      # standard input and will also act as a newline character. Not sure
-      # if puppet should convert % to a \n as the command property so the
-      # test covers the current behaviour: Do not do any conversions
-      expect(described_class.parse_line('0 22 * * 1-5   mail -s "It\'s 10pm" joe%Joe,%%Where are your kids?%')).to eq(record_type: :crontab,
-                                                                                                                      minute: ['0'],
-                                                                                                                      hour: ['22'],
-                                                                                                                      monthday: :absent,
-                                                                                                                      month: :absent,
-                                                                                                                      weekday: ['1-5'],
-                                                                                                                      special: :absent,
-                                                                                                                      command: 'mail -s "It\'s 10pm" joe%Joe,%%Where are your kids?%')
+    {
+      '* * * * * /bin/true' => {
+        record_type: :crontab, hour: :absent, minute: :absent,
+        month: :absent, weekday: :absent, monthday: :absent,
+        special: :absent, command: '/bin/true'
+      },
+      '0,15,30,45 8-18,20-22 31 12 7 /bin/true' => {
+        record_type: :crontab, minute: ['0', '15', '30', '45'],
+        hour: ['8-18', '20-22'], monthday: ['31'], month: ['12'],
+        weekday: ['7'], special: :absent, command: '/bin/true'
+      },
+      '0 22 * * 1-5   mail -s "It\'s 10pm" joe%Joe,%%Where are your kids?%' => {
+        record_type: :crontab, minute: ['0'], hour: ['22'],
+        monthday: :absent, month: :absent, weekday: ['1-5'],
+        special: :absent,
+        command: 'mail -s "It\'s 10pm" joe%Joe,%%Where are your kids?%'
+      },
+    }.each do |line, expected|
+      it "extracts the cron entry from #{line}" do
+        expect(described_class.parse_line(line)).to eq(expected)
+      end
     end
 
-    describe 'it should support special strings' do
+    describe 'when supporting special strings' do
       ['reboot', 'yearly', 'anually', 'monthly', 'weekly', 'daily', 'midnight', 'hourly'].each do |special|
         it "supports @#{special}" do
-          expect(described_class.parse_line("@#{special} /bin/true")).to eq(record_type: :crontab,
-                                                                            hour: :absent,
-                                                                            minute: :absent,
-                                                                            month: :absent,
-                                                                            weekday: :absent,
-                                                                            monthday: :absent,
-                                                                            special:,
-                                                                            command: '/bin/true')
+          expect(described_class.parse_line("@#{special} /bin/true")).to eq(expected_special_record(special))
         end
       end
     end
   end
 
+  def expected_special_record(special)
+    { record_type: :crontab, hour: :absent, minute: :absent, month: :absent,
+      weekday: :absent, monthday: :absent, special:, command: '/bin/true' }
+  end
+
   describe '.instances' do
+    def instance_parameters
+      described_class.instances.map { |instance| parameters_for(instance) }
+    end
+
+    def parameters_for(instance)
+      parameters = Puppet::Type.type(:cron).validproperties.to_h do |property|
+        [property, instance.get(property)]
+      end
+      parameters.merge(name: instance.get(:name))
+    end
+
+    def parameters_match?(actual, expected)
+      expected.all? do |field, value|
+        value.is_a?(Regexp) ? actual[field].match?(value) : actual[field] == value
+      end
+    end
+
+    let(:unmanaged_parameters) do
+      [
+        {
+          name: %r{unmanaged:\$HOME/bin/daily.job_>>_\$HOME/tmp/out_2>&1-\d+},
+          minute: ['5'], hour: ['0'], weekday: :absent, month: :absent,
+          monthday: :absent, special: :absent,
+          command: %r{\$HOME/bin/daily.job >> \$HOME/tmp/out 2>&1},
+          ensure: :present, environment: [], user: :absent
+        },
+        {
+          name: %r{unmanaged:\$HOME/bin/monthly-\d+},
+          minute: ['15'], hour: ['14'], weekday: :absent, month: :absent,
+          monthday: ['1'], special: :absent,
+          command: %r{\$HOME/bin/monthly},
+          ensure: :present, environment: [], user: :absent, target: 'foobar'
+        },
+      ]
+    end
+
     before :each do
       allow(described_class).to receive(:targets).and_return ['foobar']
     end
 
-    describe 'on linux' do
+    describe 'on linux', :aggregate_failures do
+      let(:expected_managed_parameters) do
+        [
+          {
+            name: 'real_job', minute: :absent, hour: :absent, weekday: :absent,
+            month: :absent, monthday: :absent, special: :absent, command: '/bin/true',
+            ensure: :present, environment: [], user: :absent, target: 'foobar'
+          },
+          {
+            name: 'complex_job', minute: :absent, hour: :absent, weekday: :absent,
+            month: :absent, monthday: :absent, special: 'reboot',
+            command: '/bin/true >> /dev/null 2>&1', ensure: :present,
+            environment: ['MAILTO=foo@example.com', 'SHELL=/bin/sh'],
+            user: :absent, target: 'foobar'
+          },
+        ]
+      end
+
       before(:each) do
-        allow(Facter).to receive(:value).with('os.family').and_return 'Linux'
-        allow(Facter).to receive(:value).with('os.name')
+        allow(Facter).to receive(:value).and_wrap_original do |original, fact|
+          (fact == 'os.family') ? 'Linux' : original.call(fact)
+        end
       end
 
       it 'contains no resources for a user who has no crontab' do
         allow(Puppet::Util).to receive(:uid).and_return(10)
 
-        expect(Puppet::Util::Execution).to receive(:execute).with('crontab -u foobar -l', failonfail: true, combine: true).and_return('')
+        allow(Puppet::Util::Execution).to receive(:execute).with('crontab -u foobar -l', { failonfail: true, combine: true }).and_return('')
         expect(described_class.instances).to be_empty
       end
 
@@ -206,87 +194,46 @@ describe Puppet::Type.type(:cron).provider(:crontab) do
 
       it 'is able to create records from not-managed records' do
         allow(described_class).to receive(:target_object).and_return File.new(my_fixture('simple'))
-        parameters = described_class.instances.map do |p|
-          h = { name: p.get(:name) }
-          Puppet::Type.type(:cron).validproperties.each do |property|
-            h[property] = p.get(property)
-          end
-          h
-        end
-
-        expect(parameters[0][:name]).to match(%r{unmanaged:\$HOME/bin/daily.job_>>_\$HOME/tmp/out_2>&1-\d+})
-        expect(parameters[0][:minute]).to eq(['5'])
-        expect(parameters[0][:hour]).to eq(['0'])
-        expect(parameters[0][:weekday]).to eq(:absent)
-        expect(parameters[0][:month]).to eq(:absent)
-        expect(parameters[0][:monthday]).to eq(:absent)
-        expect(parameters[0][:special]).to eq(:absent)
-        expect(parameters[0][:command]).to match(%r{\$HOME/bin/daily.job >> \$HOME/tmp/out 2>&1})
-        expect(parameters[0][:ensure]).to eq(:present)
-        expect(parameters[0][:environment]).to eq([])
-        expect(parameters[0][:user]).to eq(:absent)
-
-        expect(parameters[1][:name]).to match(%r{unmanaged:\$HOME/bin/monthly-\d+})
-        expect(parameters[1][:minute]).to eq(['15'])
-        expect(parameters[1][:hour]).to eq(['14'])
-        expect(parameters[1][:weekday]).to eq(:absent)
-        expect(parameters[1][:month]).to eq(:absent)
-        expect(parameters[1][:monthday]).to eq(['1'])
-        expect(parameters[1][:special]).to eq(:absent)
-        expect(parameters[1][:command]).to match(%r{\$HOME/bin/monthly})
-        expect(parameters[1][:ensure]).to eq(:present)
-        expect(parameters[1][:environment]).to eq([])
-        expect(parameters[1][:user]).to eq(:absent)
-        expect(parameters[1][:target]).to eq('foobar')
+        expect(instance_parameters.zip(unmanaged_parameters)).to all(satisfy { |actual, expected| parameters_match?(actual, expected) })
       end
 
       it 'is able to parse puppet managed cronjobs' do
         allow(described_class).to receive(:target_object).and_return File.new(my_fixture('managed'))
-        expect(described_class.instances.map do |p|
-          h = { name: p.get(:name) }
-          Puppet::Type.type(:cron).validproperties.each do |property|
-            h[property] = p.get(property)
-          end
-          h
-        end).to eq([
-                     {
-                       name: 'real_job',
-                       minute: :absent,
-                       hour: :absent,
-                       weekday: :absent,
-                       month: :absent,
-                       monthday: :absent,
-                       special: :absent,
-                       command: '/bin/true',
-                       ensure: :present,
-                       environment: [],
-                       user: :absent,
-                       target: 'foobar',
-                     },
-                     {
-                       name: 'complex_job',
-                       minute: :absent,
-                       hour: :absent,
-                       weekday: :absent,
-                       month: :absent,
-                       monthday: :absent,
-                       special: 'reboot',
-                       command: '/bin/true >> /dev/null 2>&1',
-                       ensure: :present,
-                       environment: [
-                         'MAILTO=foo@example.com',
-                         'SHELL=/bin/sh',
-                       ],
-                       user: :absent,
-                       target: 'foobar',
-                     },
-                   ])
+        expect(instance_parameters).to eq(expected_managed_parameters)
       end
     end
   end
 
   describe '.match' do
     describe 'normal records' do
+      let(:resource) do
+        Puppet::Type.type(:cron).new(
+          minute: ['0', '15', '30', '45'],
+          hour: ['8-18', '20-22'],
+          monthday: ['31'],
+          month: ['12'],
+          weekday: ['7'],
+          name: 'basic',
+          command: '/bin/true',
+          target: 'root',
+          provider:,
+        )
+      end
+      let(:record) do
+        {
+          record_type: :crontab,
+          minute: ['0', '15', '30', '45'],
+          hour: ['8-18', '20-22'],
+          monthday: ['31'],
+          month: ['12'],
+          weekday: ['7'],
+          special: :absent,
+          command: '/bin/true',
+          on_disk: true,
+          target: 'root',
+        }
+      end
+
       it 'matches when all fields are the same' do
         expect(described_class.match(record, resource[:name] => resource)).to eq(resource)
       end
@@ -308,6 +255,24 @@ describe Puppet::Type.type(:cron).provider(:crontab) do
     end
 
     describe 'special records' do
+      let(:resource_special) do
+        Puppet::Type.type(:cron).new(
+          special: 'reboot',
+          name: 'special',
+          command: '/bin/true',
+          target: 'nobody',
+        )
+      end
+      let(:record_special) do
+        {
+          record_type: :crontab,
+          special: 'reboot',
+          command: '/bin/true',
+          on_disk: true,
+          target: 'nobody',
+        }
+      end
+
       it 'matches when all fields are the same' do
         expect(described_class.match(record_special, resource_special[:name] => resource_special)).to eq(resource_special)
       end
@@ -325,6 +290,16 @@ describe Puppet::Type.type(:cron).provider(:crontab) do
     end
 
     describe 'with a resource without a command' do
+      let(:record) { { record_type: :crontab, command: '/bin/true' } }
+
+      let(:resource_sparse) do
+        Puppet::Type.type(:cron).new(
+          minute: ['42'],
+          target: 'root',
+          name: 'sparse',
+        )
+      end
+
       it 'does not raise an error' do
         expect { described_class.match(record, resource_sparse[:name] => resource_sparse) }.not_to raise_error
       end
