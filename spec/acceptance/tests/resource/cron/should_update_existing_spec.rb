@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when updating cron jobs' do
@@ -20,20 +22,34 @@ RSpec.context 'when updating cron jobs' do
 
   compatible_agents.each do |host|
     it 'updates existing cron entries' do
-      step 'verify that crontab -l contains what you expected'
-      run_cron_on(host, :list, 'tstuser') do |result|
-        expect(result.stdout).to match(%r{\* \* \* \* \* /bin/true})
-      end
+      expect { verify_existing_cron_updated(host) }.not_to raise_error
+    end
+  end
 
-      step 'apply the resource change on the host'
-      on(host, puppet_resource('cron', 'crontest', 'user=tstuser', 'command=/bin/true', 'ensure=present', "hour='0-6'")) do |result|
-        expect(result.stdout).to match(%r{hour\s+=>\s+\['0-6'\]})
-      end
+  def verify_existing_cron_updated(host)
+    verify_existing_cron_schedule(host)
+    apply_cron_schedule_update(host)
+    verify_cron_schedule_update(host)
+  end
 
-      step 'verify that crontab -l contains what you expected'
-      run_cron_on(host, :list, 'tstuser') do |result|
-        expect(result.stdout).to match(%r{\* 0-6 \* \* \* /bin/true})
-      end
+  def verify_existing_cron_schedule(host)
+    step 'verify that crontab -l contains what you expected'
+    run_cron_on(host, :list, 'tstuser') do |result|
+      expect(result.stdout).to match(%r{\* \* \* \* \* /bin/true})
+    end
+  end
+
+  def apply_cron_schedule_update(host)
+    step 'apply the resource change on the host'
+    on(host, puppet_resource('cron', 'crontest', 'user=tstuser', 'command=/bin/true', 'ensure=present', "hour='0-6'")) do |result|
+      expect(result.stdout).to match(%r{hour\s+=>\s+\['0-6'\]})
+    end
+  end
+
+  def verify_cron_schedule_update(host)
+    step 'verify that crontab -l contains what you expected'
+    run_cron_on(host, :list, 'tstuser') do |result|
+      expect(result.stdout).to match(%r{\* 0-6 \* \* \* /bin/true})
     end
   end
 end

@@ -1,10 +1,12 @@
+# frozen_string_literal: true
+
 module PuppetSpec::Compiler
   module_function
 
   def compile_to_catalog(string, node = Puppet::Node.new('test'))
     Puppet[:code] = string
     # see lib/puppet/indirector/catalog/compiler.rb#filter
-    Puppet::Parser::Compiler.compile(node).filter { |r| r.virtual? }
+    Puppet::Parser::Compiler.compile(node).filter(&:virtual?)
   end
 
   # Does not removed virtual resources in compiled catalog (i.e. keeps unrealized)
@@ -28,25 +30,24 @@ module PuppetSpec::Compiler
     graph
   end
 
-  def apply_compiled_manifest(manifest, prioritizer = Puppet::Graph::SequentialPrioritizer.new)
-    args = []
-    if Puppet.version.to_f < 5.0
-      args << 'apply'
-      # rubocop:disable RSpec/AnyInstance
-      allow_any_instance_of(Puppet::Transaction::Persistence).to receive(:save)
-      # rubocop:enable RSpec/AnyInstance
-    end
+  def apply_compiled_manifest(manifest, prioritizer = Puppet::Graph::SequentialPrioritizer.new, &)
+    args = transaction_report_args
     catalog = compile_to_ral(manifest)
-    if block_given?
-      catalog.resources.each { |res| yield res }
-    end
-    transaction = Puppet::Transaction.new(catalog,
-                                          Puppet::Transaction::Report.new(*args),
-                                          prioritizer)
+    catalog.resources.each(&) if block_given?
+    transaction = Puppet::Transaction.new(catalog, Puppet::Transaction::Report.new(*args), prioritizer)
     transaction.evaluate
     transaction.report.finalize_report
 
     transaction
+  end
+
+  def transaction_report_args
+    return [] unless Puppet.version.to_f < 5.0
+
+    # rubocop:disable RSpec/AnyInstance
+    allow_any_instance_of(Puppet::Transaction::Persistence).to receive(:save)
+    # rubocop:enable RSpec/AnyInstance
+    ['apply']
   end
 
   def apply_with_error_check(manifest)
@@ -69,25 +70,30 @@ module PuppetSpec::Compiler
     Puppet::Util::Log.with_destination(Puppet::Test::LogCollector.new(logs)) do
       yield(compiler)
     end
-    logs = logs.select { |log| log.level == :notice }.map { |log| log.message }
-    logs
+    logs.select { |log| log.level == :notice }.map(&:message)
   end
 
-  def eval_and_collect_notices(code, node = Puppet::Node.new('foonode'), topscope_vars = {})
+  def eval_and_collect_notices(code, node = Puppet::Node.new('foonode'), topscope_vars = {}, &block)
     collect_notices(code, node) do |compiler|
-      unless topscope_vars.empty?
-        scope = compiler.topscope
-        topscope_vars.each { |k, v| scope.setvar(k, v) }
-      end
-      if block_given?
-        compiler.compile do |catalog|
-          yield(compiler.topscope, catalog)
-          catalog
-        end
-      else
-        compiler.compile
-      end
+      compile_with_notice_variables(compiler, topscope_vars, &block)
     end
+  end
+
+  def compile_with_notice_variables(compiler, variables, &block)
+    set_topscope_variables(compiler, variables)
+    return compiler.compile unless block
+
+    compiler.compile do |catalog|
+      yield(compiler.topscope, catalog)
+      catalog
+    end
+  end
+
+  def set_topscope_variables(compiler, variables)
+    return if variables.empty?
+
+    scope = compiler.topscope
+    variables.each { |key, value| scope.setvar(key, value) }
   end
 
   # Compiles a catalog, and if source is given evaluates it and returns its result.
@@ -100,18 +106,19 @@ module PuppetSpec::Compiler
     source_location = caller(0..0)
     Puppet[:code] = code
     compiler = Puppet::Parser::Compiler.new(node)
-    unless variables.empty?
-      scope = compiler.topscope
-      variables.each { |k, v| scope.setvar(k, v) }
-    end
+    set_topscope_variables(compiler, variables)
 
     if source.nil?
       compiler.compile
       # see lib/puppet/indirector/catalog/compiler.rb#filter
-      return compiler.filter { |r| r.virtual? }
+      return compiler.filter(&:virtual?)
     end
 
     # evaluate given source is the context of the compiled state and return its result
+    evaluate_source(compiler, source, source_location)
+  end
+
+  def evaluate_source(compiler, source, source_location)
     compiler.compile do |_catalog|
       Puppet::Pops::Parser::EvaluatingParser.singleton.evaluate_string(compiler.topscope, source, source_location)
     end

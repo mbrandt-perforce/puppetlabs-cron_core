@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when Puppet cannot read a crontab file' do
@@ -26,90 +28,106 @@ RSpec.context 'when Puppet cannot read a crontab file' do
 
   compatible_agents.each do |agent|
     it "onlies fail the associated resources on #{agent}" do
-      crontab_exe = nil
-      step 'Find the crontab executable' do
-        crontab_exe = on(agent, 'which crontab').stdout.chomp
-      end
+      expect { verify_associated_read_error(agent) }.not_to raise_error
+    end
+  end
 
-      stub_crontab_bin_dir = nil
-      stub_crontab_exe = nil
-      step 'Create the stub crontab executable that triggers the read error for the failed user' do
-        stub_crontab_bin_dir = agent.tmpdir('stub_crontab_bin_dir')
-        stub_crontab_exe = "#{stub_crontab_bin_dir}/crontab"
+  def verify_associated_read_error(agent)
+    crontab_exe = find_crontab_executable(agent)
+    stub_bin_dir, stub_exe = create_failed_user_crontab_stub(agent, crontab_exe)
+    path_env_var = find_agent_path(agent)
+    puppet_result = apply_read_error_manifest(agent, stub_bin_dir, stub_exe, path_env_var)
+    verify_unreadable_user_failed(puppet_result)
+    verify_readable_user_succeeded(puppet_result)
+    verify_readable_user_crontab(agent)
+  end
 
-        # On Linux and OSX, we read a user's crontab by running crontab -u <username>,
-        # where the crontab command is run as root. However on AIX/Solaris, we read a
-        # user's crontab by running the crontab command as that user. Thus our mock
-        # crontab executable needs to check if we're reading our failed user's crontab
-        # (Linux and OSX) OR running crontab as our failed user (AIX and Solaris) before
-        # triggering the FileReadError
-        stub_crontab_exe_script = <<-SCRIPT
-#!/usr/bin/env bash
- if [[ "$@" =~ #{failed_username} || "`id`" =~ #{failed_username} ]]; then
-  echo "Mocking a FileReadError for the #{failed_username} user's crontab!"
-  exit 1
-fi
- #{crontab_exe} $@
-SCRIPT
+  def find_crontab_executable(agent)
+    executable = nil
+    step 'Find the crontab executable' do
+      executable = on(agent, 'which crontab').stdout.chomp
+    end
+    executable
+  end
 
-        create_remote_file(agent, stub_crontab_exe, stub_crontab_exe_script)
-        on(agent, "chmod 777 #{stub_crontab_bin_dir}")
-        on(agent, "chmod 777 #{stub_crontab_exe}")
-      end
+  def create_failed_user_crontab_stub(agent, crontab_exe)
+    bin_dir = remote_tmpdir(agent, 'stub_crontab_bin_dir')
+    stub_exe = "#{bin_dir}/crontab"
+    script = failed_user_stub_script(crontab_exe)
+    create_remote_file(agent, stub_exe, script)
+    on(agent, "chmod 777 #{bin_dir}")
+    on(agent, "chmod 777 #{stub_exe}")
+    [bin_dir, stub_exe]
+  end
 
-      path_env_var = nil
-      step 'Get the value of the PATH environment variable' do
-        path_env_var = on(agent, 'echo $PATH').stdout.chomp
-      end
+  def failed_user_stub_script(crontab_exe)
+    <<~SCRIPT
+      #!/usr/bin/env bash
+      if [[ "$@" =~ #{failed_username} || "`id`" =~ #{failed_username} ]]; then
+      echo "Mocking a FileReadError for the #{failed_username} user's crontab!"
+      exit 1
+      fi
+      #{crontab_exe} $@
+    SCRIPT
+  end
 
-      puppet_result = nil
-      step 'Add some cron entries with Puppet' do
-        # We delete our mock crontab executable here to ensure that Cron[second_entry]'s
-        # evaluation fails because of the FileReadError raised in the prefetch
-        # step. Otherwise, Cron[second_entry]'s evaluation will fail at the write step
-        # because Puppet would still be invoking our mock crontab executable, which would
-        # pass the test on an agent that swallows FileReadErrors in the cron provider's
-        # prefetch step.
-        manifest = [
-          cron_manifest('first_entry', command: 'ls', user: username),
-          file_manifest(stub_crontab_exe, ensure: :absent),
-          cron_manifest('second_entry', command: 'ls', user: failed_username),
-        ].join("\n\n")
-        manifest_file = agent.tmpfile('crontab_overwrite_manifest')
-        create_remote_file(agent, manifest_file, manifest)
+  def find_agent_path(agent)
+    path = nil
+    step 'Get the value of the PATH environment variable' do
+      path = on(agent, 'echo $PATH').stdout.chomp
+    end
+    path
+  end
 
-        # We need to run a script here instead of a command because:
-        #   * We need to cd into a directory that our user can access. Otherwise, bash will
-        #   fail to execute stub_crontab_exe on AIX and Solaris because we run crontab
-        #   as the given user, and the given user does not have access to Puppet's cwd.
-        #
-        #   * We also need to pass-in our PATH to Puppet since it contains stub_crontab_bin_dir.
-        apply_crontab_overwrite_manifest = agent.tmpfile('apply_crontab_overwrite_manifest')
-        script = <<-SCRIPT
+  def apply_read_error_manifest(agent, stub_bin_dir, stub_exe, path_env_var)
+    result = nil
+    step 'Add some cron entries with Puppet' do
+      manifest_file = create_read_error_manifest(agent, stub_exe)
+      result = execute_read_error_manifest(agent, stub_bin_dir, path_env_var, manifest_file)
+    end
+    result
+  end
+
+  def create_read_error_manifest(agent, stub_exe)
+    manifest = [
+      cron_manifest('first_entry', command: 'ls', user: username),
+      file_manifest(stub_exe, ensure: :absent),
+      cron_manifest('second_entry', command: 'ls', user: failed_username),
+    ].join("\n\n")
+    manifest_file = agent.tmpfile('crontab_overwrite_manifest')
+    create_remote_file(agent, manifest_file, manifest)
+    manifest_file
+  end
+
+  def execute_read_error_manifest(agent, stub_bin_dir, path_env_var, manifest_file)
+    script_file = agent.tmpfile('apply_crontab_overwrite_manifest')
+    script = <<-SCRIPT
   #!/usr/bin/env bash
-  cd #{stub_crontab_bin_dir} && puppet apply #{manifest_file}
-  SCRIPT
-        create_remote_file(agent, apply_crontab_overwrite_manifest, script)
-        on(agent, "chmod a+x #{apply_crontab_overwrite_manifest}")
+  cd #{stub_bin_dir} && puppet apply #{manifest_file}
+    SCRIPT
+    create_remote_file(agent, script_file, script)
+    on(agent, "chmod a+x #{script_file}")
+    on(agent, "bash #{script_file}", environment: { PATH: "#{stub_bin_dir}:#{path_env_var}" })
+  end
 
-        puppet_result = on(agent, "bash #{apply_crontab_overwrite_manifest}", environment: { PATH: "#{stub_crontab_bin_dir}:#{path_env_var}" })
-      end
+  def verify_unreadable_user_failed(puppet_result)
+    step 'Verify that Puppet fails a Cron resource associated with an unreadable crontab file' do
+      expect(puppet_result.stderr).to(match(%r{Cron.*second_entry}), 'Puppet does not fail a Cron resource associated with an unreadable crontab file')
+    end
+  end
 
-      step 'Verify that Puppet fails a Cron resource associated with an unreadable crontab file' do
-        assert_match(%r{Cron.*second_entry}, puppet_result.stderr, 'Puppet does not fail a Cron resource associated with an unreadable crontab file')
-      end
+  def verify_readable_user_succeeded(puppet_result)
+    step 'Verify that Puppet does not fail a Cron resource associated with a readable crontab file' do
+      expect(puppet_result.stderr).not_to(match(%r{Cron.*first_entry}), 'Puppet fails a Cron resource associated with a readable crontab file')
+    end
+    step 'Verify that Puppet successfully evaluates a Cron resource associated with a readable crontab file' do
+      expect(puppet_result.stdout).to(match(%r{Cron.*first_entry}), 'Puppet fails to evaluate a Cron resource associated with a readable crontab file')
+    end
+  end
 
-      step 'Verify that Puppet does not fail a Cron resource associated with a readable crontab file' do
-        refute_match(%r{Cron.*first_entry}, puppet_result.stderr, 'Puppet fails a Cron resource associated with a readable crontab file')
-      end
-
-      step 'Verify that Puppet successfully evaluates a Cron resource associated with a readable crontab file' do
-        assert_match(%r{Cron.*first_entry}, puppet_result.stdout, 'Puppet fails to evaluate a Cron resource associated with a readable crontab file')
-      end
-
-      step 'Verify that Puppet did update the readable crontab file with the Cron resource' do
-        assert_matching_arrays(['* * * * * ls'], crontab_entries_of(agent, username), 'Puppet fails to update a readable crontab file with the specified Cron entry')
-      end
+  def verify_readable_user_crontab(agent)
+    step 'Verify that Puppet did update the readable crontab file with the Cron resource' do
+      assert_matching_arrays(['* * * * * ls'], crontab_entries_of(agent, username), 'Puppet fails to update a readable crontab file with the specified Cron entry')
     end
   end
 end

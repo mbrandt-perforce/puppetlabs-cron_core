@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
 describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
@@ -13,6 +15,12 @@ describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
 
   after :each do
     described_class.unprovide(:simple)
+  end
+
+  def schedule_error(property, value)
+    described_class.new(name: 'foo', property => value)
+  rescue Puppet::Error => e
+    e.message
   end
 
   it 'has :name be its namevar' do
@@ -39,7 +47,7 @@ describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
     end
   end
 
-  describe 'when validating values' do
+  describe 'when validating values', :aggregate_failures do
     describe 'ensure' do
       it 'supports present as a value for ensure' do
         expect { described_class.new(name: 'foo', ensure: :present) }.not_to raise_error
@@ -58,6 +66,7 @@ describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
       it 'discards leading spaces' do
         expect(described_class.new(name: 'foo', command: ' /bin/true')[:command]).not_to match Regexp.new(' ')
       end
+
       it 'discards trailing spaces' do
         expect(described_class.new(name: 'foo', command: '/bin/true ')[:command]).not_to match Regexp.new(' ')
       end
@@ -249,31 +258,18 @@ describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
       end
 
       it 'supports valid numeric weekdays' do
-        expect { described_class.new(name: 'foo', weekday: '0') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: '1') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: '6') }.not_to raise_error
         # According to http://www.manpagez.com/man/5/crontab 7 is also valid (Sunday)
-        expect { described_class.new(name: 'foo', weekday: '7') }.not_to raise_error
+        expect { ['0', '1', '6', '7'].each { |value| described_class.new(name: 'foo', weekday: value) } }.not_to raise_error
       end
 
       it 'supports valid weekdays as words (long version)' do
-        expect { described_class.new(name: 'foo', weekday: 'Monday') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Tuesday') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Wednesday') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Thursday') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Friday') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Saturday') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Sunday') }.not_to raise_error
+        weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        expect { weekdays.each { |day| described_class.new(name: 'foo', weekday: day) } }.not_to raise_error
       end
 
       it 'supports valid weekdays as words (3 character version)' do
-        expect { described_class.new(name: 'foo', weekday: 'Mon') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Tue') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Wed') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Thu') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Fri') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Sat') }.not_to raise_error
-        expect { described_class.new(name: 'foo', weekday: 'Sun') }.not_to raise_error
+        weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        expect { weekdays.each { |day| described_class.new(name: 'foo', weekday: day) } }.not_to raise_error
       end
 
       it 'does not support numeric values out of range' do
@@ -350,33 +346,15 @@ describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
       end
 
       it 'supports valid months as words' do
-        expect(described_class.new(name: 'foo', month: 'January')[:month]).to eq(['1'])
-        expect(described_class.new(name: 'foo', month: 'February')[:month]).to eq(['2'])
-        expect(described_class.new(name: 'foo', month: 'March')[:month]).to eq(['3'])
-        expect(described_class.new(name: 'foo', month: 'April')[:month]).to eq(['4'])
-        expect(described_class.new(name: 'foo', month: 'May')[:month]).to eq(['5'])
-        expect(described_class.new(name: 'foo', month: 'June')[:month]).to eq(['6'])
-        expect(described_class.new(name: 'foo', month: 'July')[:month]).to eq(['7'])
-        expect(described_class.new(name: 'foo', month: 'August')[:month]).to eq(['8'])
-        expect(described_class.new(name: 'foo', month: 'September')[:month]).to eq(['9'])
-        expect(described_class.new(name: 'foo', month: 'October')[:month]).to eq(['10'])
-        expect(described_class.new(name: 'foo', month: 'November')[:month]).to eq(['11'])
-        expect(described_class.new(name: 'foo', month: 'December')[:month]).to eq(['12'])
+        months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+        actual = months.map { |month| described_class.new(name: 'foo', month: month)[:month] }
+        expect(actual).to eq([['1'], ['2'], ['3'], ['4'], ['5'], ['6'], ['7'], ['8'], ['9'], ['10'], ['11'], ['12']])
       end
 
       it 'supports valid months as words (3 character short version)' do
-        expect(described_class.new(name: 'foo', month: 'Jan')[:month]).to eq(['1'])
-        expect(described_class.new(name: 'foo', month: 'Feb')[:month]).to eq(['2'])
-        expect(described_class.new(name: 'foo', month: 'Mar')[:month]).to eq(['3'])
-        expect(described_class.new(name: 'foo', month: 'Apr')[:month]).to eq(['4'])
-        expect(described_class.new(name: 'foo', month: 'May')[:month]).to eq(['5'])
-        expect(described_class.new(name: 'foo', month: 'Jun')[:month]).to eq(['6'])
-        expect(described_class.new(name: 'foo', month: 'Jul')[:month]).to eq(['7'])
-        expect(described_class.new(name: 'foo', month: 'Aug')[:month]).to eq(['8'])
-        expect(described_class.new(name: 'foo', month: 'Sep')[:month]).to eq(['9'])
-        expect(described_class.new(name: 'foo', month: 'Oct')[:month]).to eq(['10'])
-        expect(described_class.new(name: 'foo', month: 'Nov')[:month]).to eq(['11'])
-        expect(described_class.new(name: 'foo', month: 'Dec')[:month]).to eq(['12'])
+        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        actual = months.map { |month| described_class.new(name: 'foo', month: month)[:month] }
+        expect(actual).to eq([['1'], ['2'], ['3'], ['4'], ['5'], ['6'], ['7'], ['8'], ['9'], ['10'], ['11'], ['12']])
       end
 
       it 'does not support numeric values out of range' do
@@ -406,15 +384,18 @@ describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
       end
 
       it 'does not support multiple values if at least one is invalid' do
-        # one invalid
-        expect { described_class.new(name: 'foo', month: ['0', '1', '12']) }.to raise_error(Puppet::Error, %r{0 is not a valid month})
-        expect { described_class.new(name: 'foo', month: ['1', '13', '10']) }.to raise_error(Puppet::Error, %r{13 is not a valid month})
-        expect { described_class.new(name: 'foo', month: ['Jan', 'Feb', 'Jxx']) }.to raise_error(Puppet::Error, %r{Jxx is not a valid month})
-        # two invalid
-        expect { described_class.new(name: 'foo', month: ['Jan', 'Fex', 'Jux']) }.to raise_error(Puppet::Error, %r{(Fex|Jux) is not a valid month})
-        # all invalid
-        expect { described_class.new(name: 'foo', month: ['-1', '0', '13']) }.to raise_error(Puppet::Error, %r{(-1|0|13) is not a valid month})
-        expect { described_class.new(name: 'foo', month: ['Jax', 'Fex', 'Aux']) }.to raise_error(Puppet::Error, %r{(Jax|Fex|Aux) is not a valid month})
+        expect(month_error_cases).to all(satisfy { |error, pattern| error.match?(pattern) })
+      end
+
+      def month_error_cases
+        [
+          [schedule_error(:month, ['0', '1', '12']), %r{0 is not a valid month}],
+          [schedule_error(:month, ['1', '13', '10']), %r{13 is not a valid month}],
+          [schedule_error(:month, ['Jan', 'Feb', 'Jxx']), %r{Jxx is not a valid month}],
+          [schedule_error(:month, ['Jan', 'Fex', 'Jux']), %r{(Fex|Jux) is not a valid month}],
+          [schedule_error(:month, ['-1', '0', '13']), %r{(-1|0|13) is not a valid month}],
+          [schedule_error(:month, ['Jax', 'Fex', 'Aux']), %r{(Jax|Fex|Aux) is not a valid month}],
+        ]
       end
 
       it 'supports valid step syntax' do
@@ -524,30 +505,21 @@ describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
         end
       end
 
-      context 'when combined with numeric schedule fields' do
-        context "which are 'absent'" do
-          [['reboot', 'yearly', 'annually', 'monthly', 'weekly', 'daily', 'midnight', 'hourly'], :absent].flatten.each do |value|
-            it "accepts the value '#{value}' for special" do
-              expect {
-                described_class.new(name: 'foo', minute: :absent, special: value)
-              }.not_to raise_error
-            end
-          end
+      [['reboot', 'yearly', 'annually', 'monthly', 'weekly', 'daily', 'midnight', 'hourly'], :absent].flatten.each do |value|
+        it "accepts the value '#{value}' for special when numeric fields are absent" do
+          expect { described_class.new(name: 'foo', minute: :absent, special: value) }.not_to raise_error
         end
-        context 'which are not absent' do
-          ['reboot', 'yearly', 'annually', 'monthly', 'weekly', 'daily', 'midnight', 'hourly'].each do |value|
-            it "does not accept the value '#{value}' for special" do
-              expect {
-                described_class.new(name: 'foo', minute: '1', special: value)
-              }.to raise_error(Puppet::Error, %r{cannot specify both a special schedule and a value})
-            end
-          end
-          it "accepts the 'absent' value for special" do
-            expect {
-              described_class.new(name: 'foo', minute: '1', special: :absent)
-            }.not_to raise_error
-          end
+      end
+
+      ['reboot', 'yearly', 'annually', 'monthly', 'weekly', 'daily', 'midnight', 'hourly'].each do |value|
+        it "does not accept the value '#{value}' for special when numeric fields are present" do
+          expect { described_class.new(name: 'foo', minute: '1', special: value) }
+            .to raise_error(Puppet::Error, %r{cannot specify both a special schedule and a value})
         end
+      end
+
+      it "accepts the 'absent' value for special when numeric fields are present" do
+        expect { described_class.new(name: 'foo', minute: '1', special: :absent) }.not_to raise_error
       end
     end
 
@@ -597,19 +569,17 @@ describe Puppet::Type.type(:cron), unless: Puppet.features.microsoft_windows? do
       resource = described_class.new(name: 'dummy', command: '/usr/bin/uptime', user: 'alice')
       catalog.add_resource resource
       req = resource.autorequire
-      expect(req.size).to eq(1)
-      expect(req[0].target).to eq(resource)
-      expect(req[0].source).to eq(user_alice)
+      expect(req.map { |relationship| [relationship.target, relationship.source] }).to eq([[resource, user_alice]])
     end
   end
 
   it 'does not require a command when removing an entry' do
     entry = described_class.new(name: 'test_entry', ensure: :absent)
-    expect(entry.value(:command)).to eq(nil)
+    expect(entry.value(:command)).to be_nil
   end
 
   it 'defaults to user => root if Etc.getpwuid(Process.uid) returns nil (#12357)' do
-    expect(Etc).to receive(:getpwuid).and_return(nil)
+    allow(Etc).to receive(:getpwuid).and_return(nil)
     entry = described_class.new(name: 'test_entry', ensure: :present)
     expect(entry.value(:user)).to eql 'root'
   end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when removing crontabs' do
@@ -20,15 +22,19 @@ RSpec.context 'when removing crontabs' do
 
   compatible_agents.each do |host|
     it 'removes crontabs based on matching' do
-      step 'Remove cron resource'
-      on(host, puppet_resource('cron', 'bogus', 'user=tstuser', 'command=/bin/true', 'ensure=absent')) do |result|
-        expect(result.stdout).to match(%r{bogus\D+ensure: removed})
-      end
+      expect { verify_cron_removed_by_match(host) }.not_to raise_error
+    end
+  end
 
-      step 'verify that crontab -l contains what you expected'
-      run_cron_on(host, :list, 'tstuser') do |result|
-        expect(result.stdout.scan('/bin/true').length).to eq(0)
-      end
+  def verify_cron_removed_by_match(host)
+    step 'Remove cron resource'
+    on(host, puppet_resource('cron', 'bogus', 'user=tstuser', 'command=/bin/true', 'ensure=absent')) do |result|
+      expect(result.stdout).to match(%r{bogus\D+ensure: removed})
+    end
+
+    step 'verify that crontab -l contains what you expected'
+    run_cron_on(host, :list, 'tstuser') do |result|
+      expect(result.stdout.scan('/bin/true').length).to eq(0)
     end
   end
 end

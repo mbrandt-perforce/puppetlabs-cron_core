@@ -43,9 +43,10 @@ bolt-debug.log
 /Rakefile
 /rakelib/
 /.rspec
-/..yml
+/.rubocop.yml
 /.yardopts
 /spec/
+/provision.yaml
 /.vscode/
 /.sync.yml
 /.devcontainer/

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when leading zeroes are present' do
@@ -17,14 +19,19 @@ RSpec.context 'when leading zeroes are present' do
 
   compatible_agents.each do |host|
     it 'does not ignore leading zeroes' do
-      step 'apply the resource on the host' do
-        on(host, puppet_resource('cron', 'crontest', 'user=tstuser', 'command=/bin/true', 'ensure=present', "minute='05'", "hour='007'", "weekday='03'", "month='0011'", "monthday='07'"), acceptable_exit_codes: [0])
-      end
+      expect { verify_leading_zeroes_preserved(host) }.not_to raise_error
+    end
+  end
 
-      step 'Verify that crontab -l contains what you expected' do
-        run_cron_on(host, :list, 'tstuser') do |result|
-          expect(result.stdout).to match(%r{05 007 07 0011 03 /bin/true})
-        end
+  def verify_leading_zeroes_preserved(host)
+    step 'apply the resource on the host' do
+      on(host, puppet_resource('cron', 'crontest', 'user=tstuser', 'command=/bin/true', 'ensure=present', "minute='05'", "hour='007'", "weekday='03'", "month='0011'", "monthday='07'"),
+         acceptable_exit_codes: [0])
+    end
+
+    step 'Verify that crontab -l contains what you expected' do
+      run_cron_on(host, :list, 'tstuser') do |result|
+        expect(result.stdout).to match(%r{05 007 07 0011 03 /bin/true})
       end
     end
   end

@@ -1,242 +1,210 @@
+# frozen_string_literal: true
+
 require_relative 'filetype'
 require 'puppet/provider/parsedfile'
 
-Puppet::Type.type(:cron).provide(:crontab, parent: Puppet::Provider::ParsedFile, default_target: ENV['USER'] || 'root', raise_prefetch_errors: true) do
-  desc 'The crontab provider'
+# Helpers for the record callbacks, which FileRecord evaluates on its instance.
+module Puppet::Provider::Cron::CrontabRecordHooks
+  def self.post_parse(record)
+    time = record.delete(:time)
+    match = %r{@(\S+)}.match(time)
+    return parse_special(record, match) if match
 
-  commands crontab: 'crontab'
+    match = %r{(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)}.match(time)
+    return parse_standard(record, match) if match
 
-  text_line :comment, match: %r{^\s*#}, post_parse: proc { |record|
-    record[:name] = Regexp.last_match(1) if record[:line] =~ %r{Puppet Name: (.+)\s*$}
-  }
+    raise Puppet::Error, _('Line got parsed as a crontab entry but cannot be handled. Please file a bug with the contents of your crontab')
+  end
 
-  text_line :blank, match: %r{^\s*$}
+  def self.parse_special(record, match)
+    Puppet::Type::Cron::ProviderCrontab::TIME_FIELDS.each { |field| record[field] = :absent }
+    record[:special] = match.captures[0]
+    record
+  end
 
-  text_line :environment, match: %r{^\s*\w+\s*=}
+  def self.parse_standard(record, match)
+    record[:special] = :absent
+    Puppet::Type::Cron::ProviderCrontab::TIME_FIELDS.zip(match.captures).each do |field, value|
+      record[field] = (value == '*') ? :absent : value.split(',')
+    end
+    record
+  end
 
-  def self.filetype
+  def self.pre_gen(record)
+    record[:special] = "@#{record[:special]}" if record[:special] && record[:special] != :absent
+
+    Puppet::Type::Cron::ProviderCrontab::TIME_FIELDS.each do |field|
+      vals = record[field]
+      record[field] = vals.join(',') if vals.is_a?(Array)
+    end
+    record
+  end
+
+  def self.to_line(file_record, record)
+    record[:name] = nil if record[:unmanaged]
+    named_header(record) + environment_lines(record) + schedule_line(file_record, record)
+  end
+
+  def self.named_header(record)
+    return '' unless record[:name]
+
+    "# Puppet Name: #{record[:name]}\n"
+  end
+
+  def self.environment_lines(record)
+    return '' unless record[:environment] && record[:environment] != :absent
+
+    record[:environment].map { |line| "#{line}\n" }.join
+  end
+
+  def self.schedule_line(file_record, record)
+    fields = if record[:special] && record[:special] != :absent
+               [:special, :command]
+             else
+               Puppet::Type::Cron::ProviderCrontab::TIME_FIELDS + [:command]
+             end
+    record.values_at(*fields).map { |field|
+      (field.nil? || field == :absent) ? file_record.absent : field
+    }.join(file_record.joiner)
+  end
+end
+
+# Class-level behavior used by the crontab provider.
+module Puppet::Provider::Cron::CrontabProviderClassMethods
+  def filetype
     tabname = case Facter.value('os.family')
-              when 'Solaris'
-                :suntab
-              when 'AIX'
-                :aixtab
-              else
-                :crontab
+              when 'Solaris' then :suntab
+              when 'AIX' then :aixtab
+              else :crontab
               end
-
     Puppet::Provider::Cron::FileType.filetype(tabname)
   end
 
-  self::TIME_FIELDS = [:minute, :hour, :monthday, :month, :weekday].freeze
-
-  record_line :crontab,
-              fields: ['time', 'command'],
-              match: %r{^\s*(@\w+|\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$},
-              absent: '*',
-              block_eval: :instance do
-    def post_parse(record)
-      time = record.delete(:time)
-      match = %r{@(\S+)}.match(time)
-      if match
-        # is there another way to access the constant?
-        Puppet::Type::Cron::ProviderCrontab::TIME_FIELDS.each { |f| record[f] = :absent }
-        record[:special] = match.captures[0]
-        return record
-      end
-
-      match = %r{(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)}.match(time)
-      if match
-        record[:special] = :absent
-        Puppet::Type::Cron::ProviderCrontab::TIME_FIELDS.zip(match.captures).each do |field, value|
-          record[field] = if value == absent
-                            :absent
-                          else
-                            value.split(',')
-                          end
-        end
-
-        return record
-      end
-
-      raise Puppet::Error, _('Line got parsed as a crontab entry but cannot be handled. Please file a bug with the contents of your crontab')
-    end
-
-    def pre_gen(record)
-      if record[:special] && record[:special] != :absent
-        record[:special] = "@#{record[:special]}"
-      end
-
-      Puppet::Type::Cron::ProviderCrontab::TIME_FIELDS.each do |field|
-        if (vals = record[field]) && vals.is_a?(Array)
-          record[field] = vals.join(',')
-        end
-      end
-      record
-    end
-
-    def to_line(record)
-      str = ''
-      record[:name] = nil if record[:unmanaged]
-      str = "# Puppet Name: #{record[:name]}\n" if record[:name]
-      if record[:environment] && record[:environment] != :absent
-        str += record[:environment].map { |line| "#{line}\n" }.join('')
-      end
-      fields = if record[:special] && record[:special] != :absent
-                 [:special, :command]
-               else
-                 Puppet::Type::Cron::ProviderCrontab::TIME_FIELDS + [:command]
-               end
-      str += record.values_at(*fields).map { |field|
-        if field.nil? || field == :absent
-          absent
-        else
-          field
-        end
-      }.join(joiner)
-      str
-    end
-  end
-
-  def create
-    if resource.should(:command)
-      super
-    else
-      resource.err _('no command specified, cannot create')
-    end
-  end
-
-  # Look up a resource with a given name whose user matches a record target
-  #
-  # @api private
-  #
-  # @note This overrides the ParsedFile method for finding resources by name,
-  #   so that only records for a given user are matched to resources of the
-  #   same user so that orphaned records in other crontabs don't get falsely
-  #   matched (#2251)
-  #
-  # @param [Hash<Symbol, Object>] record
-  # @param [Array<Puppet::Resource>] resources
-  #
-  # @return [Puppet::Resource, nil] The resource if found, else nil
-  def self.resource_for_record(record, resources)
+  # Look up a resource with a given name whose user matches a record target.
+  def resource_for_record(record, resources)
     resource = super
-
     target = resource[:target] || resource[:user] if resource
-    return resource if record[:target] == target
+    resource if record[:target] == target
   end
 
-  # Return the header placed at the top of each generated file, warning
-  # users that modifying this file manually is probably a bad idea.
-  def self.header
+  def header
     %(# HEADER: This file was autogenerated at #{Time.now} by puppet.
 # HEADER: While it can still be managed manually, it is definitely not recommended.
 # HEADER: Note particularly that the comments starting with 'Puppet Name' should
 # HEADER: not be deleted, as doing so could cause duplicate cron jobs.\n)
   end
 
-  # Regex for finding one vixie cron header.
-  def self.native_header_regex
+  def native_header_regex
     %r{# DO NOT EDIT THIS FILE.*?Cron version.*?vixie.*?\n}m
   end
 
-  # If a vixie cron header is found, it should be dropped, cron will insert
-  # a new one in any case, so we need to avoid duplicates.
-  def self.drop_native_header
+  def drop_native_header
     true
   end
+end
 
-  # See if we can match the record against an existing cron job.
-  def self.match(record, resources)
+# Matching methods used to associate crontab records with resources.
+module Puppet::Provider::Cron::CrontabProviderMatchingMethods
+  def match(record, resources)
     # if the record is named, do not even bother (#19876)
     # except the resource name was implicitly generated (#3220)
     return false if record[:name] && !record[:unmanaged]
-    resources.each do |_name, resource|
+
+    resources.each_value do |resource|
       # Match the command first, since it's the most important one.
-      next unless record[:target] == resource[:target]
-      next unless record[:command] == resource.value(:command)
+      next unless record[:target] == resource[:target] && record[:command] == resource.value(:command)
 
       # Now check the time fields
       compare_fields = self::TIME_FIELDS + [:special]
-
-      matched = true
-      compare_fields.each do |field|
-        # If the resource does not manage a property (say monthday) it should
-        # always match. If it is the other way around (e.g. resource defines
-        # a should value for :special but the record does not have it, we do
-        # not match
-        next unless resource[field]
-        unless record.include?(field)
-          matched = false
-          break
-        end
-
-        if (record_value = record[field]) && (resource_value = resource.value(field))
-          # The record translates '*' into absent in the post_parse hook and
-          # the resource type does exactly the opposite (alias :absent to *)
-          next if resource_value == '*' && record_value == :absent
-          next if resource_value == record_value
-        end
-        matched = false
-        break
-      end
-      return resource if matched
+      return resource if fields_match?(record, resource, compare_fields)
     end
     false
   end
 
-  @name_index = 0
+  private
 
-  # Collapse name and env records.
-  def self.prefetch_hook(records)
+  def fields_match?(record, resource, fields)
+    fields.all? { |field| field_matches?(record, resource, field) }
+  end
+
+  def field_matches?(record, resource, field)
+    return true unless resource[field]
+    return false unless record.include?(field)
+
+    record_value = record[field]
+    resource_value = resource.value(field)
+    return false unless record_value && resource_value
+
+    resource_value == record_value || (resource_value == '*' && record_value == :absent)
+  end
+end
+
+# Methods for collecting names and environment lines during prefetching.
+module Puppet::Provider::Cron::CrontabProviderPrefetchMethods
+  def prefetch_hook(records)
     name = nil
     envs = nil
     result = []
     records.each do |record|
-      case record[:record_type]
-      when :comment
-        if record[:name]
-          name = record[:name]
-          record[:skip] = true
-
-          # Start collecting env values
-          envs = []
-        end
-      when :environment
-        # If we're collecting env values (meaning we're in a named cronjob),
-        # store the line and skip the record.
-        if envs
-          envs << record[:line]
-          record[:skip] = true
-        end
-      when :blank
-        # nothing
-      else
-        if name
-          record[:name] = name
-          name = nil
-        else
-          cmd_string = record[:command].gsub(%r{\s+}, '_')
-          index = (@name_index += 1)
-          record[:name] = "unmanaged:#{cmd_string}-#{index}"
-          record[:unmanaged] = true
-        end
-        if envs.nil? || envs.empty?
-          record[:environment] = []
-        else
-          # Collect all of the environment lines, and mark the records to be skipped,
-          # since their data is included in our crontab record.
-          record[:environment] = envs
-
-          # And turn off env collection again
-          envs = nil
-        end
-      end
+      name, envs = process_record(record, name, envs)
       result << record unless record[:skip]
     end
     result
   end
 
-  def self.to_file(records)
+  private
+
+  def process_record(record, name, envs)
+    case record[:record_type]
+    when :comment then process_comment(record, name, envs)
+    when :environment then process_environment(record, name, envs)
+    when :blank then [name, envs]
+    else attach_metadata(record, name, envs)
+    end
+  end
+
+  def process_comment(record, name, envs)
+    return [name, envs] unless record[:name]
+
+    record[:skip] = true
+    [record[:name], []]
+  end
+
+  def process_environment(record, name, envs)
+    return [name, envs] unless envs
+
+    envs << record[:line]
+    record[:skip] = true
+    [name, envs]
+  end
+
+  def attach_metadata(record, name, envs)
+    assign_record_name(record, name)
+    record[:environment], envs = environment_values(envs)
+    [nil, envs]
+  end
+
+  def assign_record_name(record, name)
+    if name
+      record[:name] = name
+    else
+      cmd_string = record[:command].gsub(%r{\s+}, '_')
+      @name_index += 1
+      record[:name] = "unmanaged:#{cmd_string}-#{@name_index}"
+      record[:unmanaged] = true
+    end
+  end
+
+  def environment_values(envs)
+    return [[], envs] if envs.nil? || envs.empty?
+
+    [envs, nil]
+  end
+end
+
+# File conversion methods used by the crontab provider.
+module Puppet::Provider::Cron::CrontabProviderFileMethods
+  def to_file(records)
     text = super
     # Apparently Freebsd will "helpfully" add a new TZ line to every
     # single cron line, but not in all cases (e.g., it doesn't do it
@@ -249,36 +217,21 @@ Puppet::Type.type(:cron).provide(:crontab, parent: Puppet::Provider::ParsedFile,
     end
     text
   end
+end
 
-  def user=(user)
-    # we have to mark the target as modified first, to make sure that if
-    # we move a cronjob from userA to userB, userA's crontab will also
-    # be rewritten
-    mark_target_modified
-    @property_hash[:user] = user
-    @property_hash[:target] = user
-  end
-
-  def user
-    @property_hash[:user] || @property_hash[:target]
-  end
-
-  CRONTAB_DIR = case Facter.value('os.family')
-                when 'Debian', 'HP-UX', 'Solaris'
-                  '/var/spool/cron/crontabs'
-                when %r{BSD}
-                  '/var/cron/tabs'
-                when 'Darwin'
-                  '/usr/lib/cron/tabs/'
-                else
-                  '/var/spool/cron'
-                end
-
-  # Return the directory holding crontab files stored on the local system.
-  #
-  # @api private
-  def self.crontab_dir
-    CRONTAB_DIR
+# Target enumeration methods used by the crontab provider.
+module Puppet::Provider::Cron::CrontabProviderTargetMethods
+  def crontab_dir
+    case Facter.value('os.family')
+    when 'Debian', 'HP-UX', 'Solaris'
+      '/var/spool/cron/crontabs'
+    when %r{BSD}
+      '/var/cron/tabs'
+    when 'Darwin'
+      '/usr/lib/cron/tabs/'
+    else
+      '/var/spool/cron'
+    end
   end
 
   # Yield the names of all crontab files stored on the local system.
@@ -287,11 +240,13 @@ Puppet::Type.type(:cron).provide(:crontab, parent: Puppet::Provider::ParsedFile,
   #   files that start with .keep
   #
   # @api private
-  def self.enumerate_crontabs
-    Puppet.debug "looking for crontabs in #{CRONTAB_DIR}"
-    return unless File.readable?(CRONTAB_DIR)
-    Dir.foreach(CRONTAB_DIR) do |file|
-      path = File.join(CRONTAB_DIR, file)
+  def enumerate_crontabs
+    dir = crontab_dir
+    Puppet.debug "looking for crontabs in #{dir}"
+    return unless File.readable?(dir)
+
+    Dir.foreach(dir) do |file|
+      path = File.join(dir, file)
       # Gentoo creates .keep_PACKAGE-SLOT files to make sure the directory is not
       # removed
       yield(file) if File.file?(path) && File.writable?(path) && !file.start_with?('.keep_')
@@ -300,11 +255,55 @@ Puppet::Type.type(:cron).provide(:crontab, parent: Puppet::Provider::ParsedFile,
 
   # Include all plausible crontab files on the system
   # in the list of targets (#11383 / PUP-1381)
-  def self.targets(resources = nil)
-    targets = super(resources)
-    enumerate_crontabs do |target|
-      targets << target
-    end
-    targets.uniq
+  def targets(resources = nil)
+    (super + crontab_targets).uniq
   end
+
+  def crontab_targets
+    targets = []
+    enumerate_crontabs { |target| targets << target }
+    targets
+  end
+end
+
+# Instance behavior used by the crontab provider.
+module Puppet::Provider::Cron::CrontabProviderInstanceMethods
+  def create
+    resource.should(:command) ? super : resource.err(_('no command specified, cannot create'))
+  end
+
+  def user=(user)
+    mark_target_modified
+    @property_hash[:user] = user
+    @property_hash[:target] = user
+  end
+
+  def user
+    @property_hash[:user] || @property_hash[:target]
+  end
+end
+
+Puppet::Type.type(:cron).provide(:crontab, parent: Puppet::Provider::ParsedFile, default_target: ENV['USER'] || 'root', raise_prefetch_errors: true) do
+  desc 'The crontab provider'
+  commands crontab: 'crontab'
+  text_line :comment, match: %r{^\s*#}, post_parse: proc { |record|
+    record[:name] = Regexp.last_match(1) if record[:line] =~ %r{Puppet Name: (.+)\s*$}
+  }
+  text_line :blank, match: %r{^\s*$}
+  text_line :environment, match: %r{^\s*\w+\s*=}
+  self::TIME_FIELDS = [:minute, :hour, :monthday, :month, :weekday].freeze
+  @name_index = 0
+  include Puppet::Provider::Cron::CrontabProviderInstanceMethods
+  extend Puppet::Provider::Cron::CrontabProviderClassMethods
+  extend Puppet::Provider::Cron::CrontabProviderMatchingMethods
+  extend Puppet::Provider::Cron::CrontabProviderPrefetchMethods
+  extend Puppet::Provider::Cron::CrontabProviderFileMethods
+  extend Puppet::Provider::Cron::CrontabProviderTargetMethods
+  record_line :crontab,
+              fields: ['time', 'command'],
+              match: %r{^\s*(@\w+|\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$},
+              absent: '*',
+              post_parse: Puppet::Provider::Cron::CrontabRecordHooks.method(:post_parse),
+              pre_gen: Puppet::Provider::Cron::CrontabRecordHooks.method(:pre_gen),
+              to_line: proc { |record| Puppet::Provider::Cron::CrontabRecordHooks.to_line(self, record) }
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when matching cron' do
@@ -19,15 +21,19 @@ RSpec.context 'when matching cron' do
 
   compatible_agents.each do |host|
     it 'matches existing cron jobs' do
-      step 'Apply the resource on the host using puppet resource'
-      on(host, puppet_resource('cron', 'crontest', 'user=tstuser', 'command=/bin/true', 'ensure=present')) do |result|
-        expect(result.stdout).to match(%r{present})
-      end
+      expect { verify_existing_cron_matches(host) }.not_to raise_error
+    end
+  end
 
-      step 'Verify that crontab -l contains what you expected'
-      run_cron_on(host, :list, 'tstuser') do |result|
-        expect(result.stdout).to match(%r{\* \* \* \* \* /bin/true})
-      end
+  def verify_existing_cron_matches(host)
+    step 'Apply the resource on the host using puppet resource'
+    on(host, puppet_resource('cron', 'crontest', 'user=tstuser', 'command=/bin/true', 'ensure=present')) do |result|
+      expect(result.stdout).to match(%r{present})
+    end
+
+    step 'Verify that crontab -l contains what you expected'
+    run_cron_on(host, :list, 'tstuser') do |result|
+      expect(result.stdout).to match(%r{\* \* \* \* \* /bin/true})
     end
   end
 end

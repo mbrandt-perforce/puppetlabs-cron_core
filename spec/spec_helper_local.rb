@@ -1,4 +1,6 @@
-dir = File.expand_path(File.dirname(__FILE__))
+# frozen_string_literal: true
+
+dir = __dir__
 $LOAD_PATH.unshift File.join(dir, 'lib')
 
 # Container for various Puppet-specific RSpec helpers.

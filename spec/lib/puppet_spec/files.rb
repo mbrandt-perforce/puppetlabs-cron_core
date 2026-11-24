@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'fileutils'
 require 'tempfile'
 require 'tmpdir'
@@ -36,7 +38,7 @@ module PuppetSpec::Files
 
   def file_containing(name, contents)
     file = tmpfile(name)
-    File.open(file, 'wb') { |f| f.write(contents) }
+    File.binwrite(file, contents)
     file
   end
 
@@ -48,7 +50,7 @@ module PuppetSpec::Files
     else
       text = contents[:posix]
     end
-    File.open(file, 'wb') { |f| f.write(text) }
+    File.binwrite(file, text)
     Puppet::FileSystem.chmod(0o755, file)
     file
   end
@@ -62,14 +64,14 @@ module PuppetSpec::Files
   end
 
   # Copied from ruby 2.4 source
-  def make_tmpname((prefix, suffix), n)
-    prefix = (String.try_convert(prefix) ||
-              raise(ArgumentError, "unexpected prefix: #{prefix.inspect}"))
-    suffix &&= (String.try_convert(suffix) ||
-                raise(ArgumentError, "unexpected suffix: #{suffix.inspect}"))
+  def make_tmpname((prefix, suffix), number)
+    prefix = String.try_convert(prefix) ||
+             raise(ArgumentError, "unexpected prefix: #{prefix.inspect}")
+    suffix &&= String.try_convert(suffix) ||
+               raise(ArgumentError, "unexpected suffix: #{suffix.inspect}")
     t = Time.now.strftime('%Y%m%d')
-    path = "#{prefix}#{t}-#{$PROCESS_ID}-#{rand(0x100000000).to_s(36)}".dup
-    path << "-#{n}" if n
+    path = "#{prefix}#{t}-#{$PROCESS_ID}-#{rand(0x100000000).to_s(36)}"
+    path << "-#{number}" if number
     path << suffix if suffix
     path
   end
@@ -85,7 +87,7 @@ module PuppetSpec::Files
         dir_contained_in(tmp, v)
       else
         file = File.join(dir, k)
-        File.open(file, 'wb') { |f| f.write(v) }
+        File.binwrite(file, v)
       end
     end
     dir
@@ -103,7 +105,7 @@ module PuppetSpec::Files
     target_mode = if Puppet.features.microsoft_windows?
                     mode
                   else
-                    '10' + '%04i' % mode.to_i
+                    '10%04i' % mode.to_i
                   end
     expect(actual_mode).to eq(target_mode)
   end

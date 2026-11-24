@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when removing crontab' do
@@ -17,19 +19,33 @@ RSpec.context 'when removing crontab' do
 
   compatible_agents.each do |host|
     it 'removes existing crontabs' do
-      step 'create the existing job by hand...'
-      run_cron_on(host, :add, 'tstuser', '* * * * * /bin/true')
+      expect { verify_crontab_removed(host) }.not_to raise_error
+    end
+  end
 
-      step 'apply the resource on the host using puppet resource'
-      on(host, puppet_resource('cron', 'crontest', 'user=tstuser',
-                               'command=/bin/true', 'ensure=absent')) do |result|
-        expect(result.stdout).to match(%r{crontest\D+ensure:\s+removed})
-      end
+  def verify_crontab_removed(host)
+    create_existing_cron_job(host)
+    remove_cron_job(host)
+    verify_cron_entry_absent(host)
+  end
 
-      step ' contains what you expected'
-      run_cron_on(host, :list, 'tstuser') do |result|
-        expect(result.stderr).not_to match(%r{/bin/true})
-      end
+  def create_existing_cron_job(host)
+    step 'create the existing job by hand...'
+    run_cron_on(host, :add, 'tstuser', '* * * * * /bin/true')
+  end
+
+  def remove_cron_job(host)
+    step 'apply the resource on the host using puppet resource'
+    on(host, puppet_resource('cron', 'crontest', 'user=tstuser',
+                             'command=/bin/true', 'ensure=absent')) do |result|
+      expect(result.stdout).to match(%r{crontest\D+ensure:\s+removed})
+    end
+  end
+
+  def verify_cron_entry_absent(host)
+    step ' contains what you expected'
+    run_cron_on(host, :list, 'tstuser') do |result|
+      expect(result.stderr).not_to match(%r{/bin/true})
     end
   end
 end

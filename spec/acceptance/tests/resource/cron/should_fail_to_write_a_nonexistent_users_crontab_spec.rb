@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 RSpec.context 'when Puppet attempts to write the crontab of a nonexistent user' do
@@ -14,7 +16,8 @@ RSpec.context 'when Puppet attempts to write the crontab of a nonexistent user' 
   compatible_agents.each do |agent|
     it "fails on #{agent}" do
       manifest = cron_manifest('second_entry', command: 'ls', user: nonexistent_username)
-      apply_manifest_on(agent, manifest, expect_failures: true)
+      result = apply_manifest_on(agent, manifest, expect_failures: true)
+      expect(result.exit_code).not_to eq(0)
     end
   end
 end
